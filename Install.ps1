@@ -140,6 +140,24 @@ function Install-JavaSilently {
     return $state
 }
 
+# Child processes (sdkmanager.bat, gradle, ...) read $env:JAVA_HOME
+# directly. Our own detection can find a valid JDK via a filesystem glob
+# even when JAVA_HOME itself is unset or stale, but that doesn't help
+# those child processes unless we actually (re)export it - and fix a
+# broken persisted value so future terminal sessions work too.
+function Set-JavaHomeEnv {
+    param([string]$JavaHome)
+
+    $env:JAVA_HOME = $JavaHome
+
+    $userJavaHome = [Environment]::GetEnvironmentVariable('JAVA_HOME', 'User')
+    $userJavaHomeValid = $userJavaHome -and (Test-Path (Join-Path $userJavaHome "bin\java.exe"))
+    if (-not $userJavaHomeValid) {
+        [Environment]::SetEnvironmentVariable('JAVA_HOME', $JavaHome, 'User')
+        Write-Info "Corrected stale/missing JAVA_HOME (User scope) -> $JavaHome"
+    }
+}
+
 function Test-Installation {
     param(
         [string]$InstallRoot,
@@ -248,6 +266,10 @@ function Invoke-Install {
         Write-Info "Java Home: $($javaState.Home)"
     }
 
+    if (-not $DryRun) {
+        Set-JavaHomeEnv -JavaHome $javaState.Home
+    }
+
     Write-Step "[2/7] Detecting and cleaning old/wrong Android environment..."
     if (-not (Test-Path $CleanEnvScript)) {
         throw "tools\Clean-AndroidEnv.ps1 was not found: $CleanEnvScript"
@@ -324,6 +346,24 @@ function Invoke-Install {
     if ($DryRun) {
         Write-DryRun "Would run sdkmanager to install the packages above and accept licenses"
     } else {
+        # Licenses must be accepted BEFORE installing - sdkmanager silently
+        # skips any package whose license isn't accepted yet (and still
+        # exits 0), so accepting after the fact is too late on a fresh SDK
+        # root with no prior license acceptance. Piping "y" answers straight
+        # into a PowerShell pipeline isn't reliable here: sdkmanager is slow
+        # to reach the prompt (fetching the remote repo index first), and by
+        # the time it reads stdin, PowerShell's pipe has already closed -
+        # the process sees EOF instead of "y". A real file redirected via
+        # cmd's "<" doesn't have that race.
+        Write-Info "Accepting Android SDK licenses..."
+        $yesFile = Join-Path $env:TEMP "android-dev-setup-license-yes.txt"
+        (1..50 | ForEach-Object { "y" }) | Out-File -FilePath $yesFile -Encoding ascii
+        try {
+            cmd /c "`"$SdkManager`" --sdk_root=`"$InstallRoot`" --licenses < `"$yesFile`"" | Out-Null
+        } finally {
+            Remove-Item -LiteralPath $yesFile -Force -ErrorAction SilentlyContinue
+        }
+
         $sdkArgs = @(
             "--sdk_root=$InstallRoot",
             "platform-tools",
@@ -336,9 +376,6 @@ function Invoke-Install {
         if ($LASTEXITCODE -ne 0) {
             throw "Android SDK package installation failed (exit code $LASTEXITCODE)."
         }
-
-        Write-Info "Accepting Android SDK licenses..."
-        (1..30 | ForEach-Object { "y" }) | & $SdkManager --sdk_root=$InstallRoot --licenses | Out-Null
 
         Write-Ok "Android packages installed successfully."
     }
