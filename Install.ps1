@@ -158,6 +158,50 @@ function Set-JavaHomeEnv {
     }
 }
 
+# Even a corrected registry JAVA_HOME doesn't help a terminal that was
+# already open before the fix - Windows only loads env vars into a
+# process at the moment it starts, so an old shell keeps whatever it
+# had. gradlew reads $env:JAVA_HOME every time, so a stale terminal
+# building any Android project reproduces the exact "invalid directory"
+# error even after this installer fixed the registry. Setting
+# org.gradle.java.home in the per-user global gradle.properties makes
+# Gradle use the confirmed-correct JDK directly, for every project on
+# this machine, regardless of which terminal or how stale its env is.
+function Set-GradleJavaHome {
+    param([string]$JavaHome)
+
+    $gradleDir = Join-Path $HOME ".gradle"
+    if (-not (Test-Path $gradleDir)) {
+        New-Item -ItemType Directory -Path $gradleDir | Out-Null
+    }
+    $gradleProps = Join-Path $gradleDir "gradle.properties"
+
+    # .properties files treat \ as an escape character - a Windows path
+    # needs its backslashes doubled or Gradle mis-parses the value.
+    $escapedHome = $JavaHome -replace '\\', '\\'
+    $newLine = "org.gradle.java.home=$escapedHome"
+
+    $lines = @()
+    if (Test-Path $gradleProps) {
+        $lines = @(Get-Content -LiteralPath $gradleProps)
+    }
+
+    $existingIndex = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^\s*org\.gradle\.java\.home\s*=') { $existingIndex = $i; break }
+    }
+
+    if ($existingIndex -ge 0) {
+        if ($lines[$existingIndex] -eq $newLine) { return }
+        $lines[$existingIndex] = $newLine
+    } else {
+        $lines += $newLine
+    }
+
+    Set-Content -LiteralPath $gradleProps -Value $lines
+    Write-Info "Set org.gradle.java.home in $gradleProps -> $JavaHome"
+}
+
 # Invoke-WebRequest's own progress rendering is a plain OS progress dialog
 # (the blue "Writing web request..." banner) that doesn't match the rest
 # of this tool's output. Streaming the response ourselves gives us a
@@ -357,6 +401,9 @@ function Invoke-Install {
 
     if (-not $DryRun) {
         Set-JavaHomeEnv -JavaHome $javaState.Home
+        Set-GradleJavaHome -JavaHome $javaState.Home
+    } else {
+        Write-DryRun "Would set org.gradle.java.home in $HOME\.gradle\gradle.properties -> $($javaState.Home)"
     }
 
     Write-Step "[2/7] Detecting and cleaning old/wrong Android environment..."
