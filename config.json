@@ -1,0 +1,7 @@
+{
+  "installRoot": "C:\\Android",
+  "androidPlatform": "36",
+  "buildTools": "36.0.0",
+  "ndk": "27.1.12297006",
+  "cmake": "3.22.1"
+}

@@ -1,0 +1,398 @@
+[CmdletBinding()]
+param(
+    [switch]$DryRun,
+    [switch]$Check,
+    [string]$Config,
+    [switch]$Yes,
+    [switch]$NoColor
+)
+
+$ErrorActionPreference = 'Stop'
+
+if (-not $PSScriptRoot) { $PSScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $Config) { $Config = Join-Path $PSScriptRoot "config.json" }
+
+. (Join-Path $PSScriptRoot "lib\Console.ps1")
+Set-ConsoleColorMode -NoColor:$NoColor
+
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+
+$logDir = Join-Path $PSScriptRoot "logs"
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
+$logFile = Join-Path $logDir ("install-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+try { Start-Transcript -Path $logFile -NoClobber | Out-Null } catch {}
+
+$JavaInstaller  = Join-Path $PSScriptRoot "packages\Java17-Setup.exe"
+$CmdlineZip     = Join-Path $PSScriptRoot "packages\commandlinetools-win.zip"
+$CleanEnvScript = Join-Path $PSScriptRoot "tools\Clean-AndroidEnv.ps1"
+
+function Get-SdkManagerPath {
+    param([string]$InstallRoot)
+    Join-Path $InstallRoot "cmdline-tools\latest\bin\sdkmanager.bat"
+}
+
+# Mirrors the original batch priority: JAVA_HOME, then PATH, then common
+# install dirs - checks only the FIRST candidate found, not all of them.
+function Test-JavaVersion {
+    $result = @{ Ok = $false; Home = $null; Version = $null }
+    $javaHome = $null
+
+    if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME "bin\java.exe"))) {
+        $javaHome = $env:JAVA_HOME
+    }
+
+    if (-not $javaHome) {
+        $cmd = Get-Command java.exe -ErrorAction SilentlyContinue
+        if ($cmd) {
+            $javaHome = Split-Path (Split-Path $cmd.Source -Parent) -Parent
+        }
+    }
+
+    if (-not $javaHome) {
+        foreach ($pattern in @(
+            "C:\Program Files\Java\jdk-*",
+            "C:\Program Files\Java\jre-*",
+            "C:\Program Files\Eclipse Adoptium\jdk-*",
+            "C:\Program Files\Microsoft\jdk-*"
+        )) {
+            $found = Get-Item $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found -and (Test-Path (Join-Path $found.FullName "bin\java.exe"))) {
+                $javaHome = $found.FullName
+                break
+            }
+        }
+    }
+
+    if (-not $javaHome) { return $result }
+
+    $result.Home = $javaHome
+    $javaExe = Join-Path $javaHome "bin\java.exe"
+    if (-not (Test-Path $javaExe)) { return $result }
+
+    $out = & $javaExe -version 2>&1 | Out-String
+    if ($out -match 'version\s+"([\d._]+)"') {
+        $version = $Matches[1]
+        $result.Version = $version
+        $parts = $version -split '\.'
+        $major = [int]$parts[0]
+        if ($major -eq 1 -and $parts.Count -gt 1) { $major = [int]$parts[1] } # legacy 1.8.x scheme
+        if ($major -ge 17) { $result.Ok = $true }
+    }
+
+    return $result
+}
+
+function Install-JavaSilently {
+    if (-not (Test-Path $JavaInstaller)) {
+        Write-Fail "Bundled Java installer was not found: $JavaInstaller"
+        Write-Info "Your folder must contain packages\Java17-Setup.exe and packages\commandlinetools-win.zip"
+        throw "Bundled Java installer missing."
+    }
+
+    Write-Info "Bundled Java installer found: $JavaInstaller"
+
+    if ($DryRun) {
+        Write-DryRun "Would silently install Java 17 from Java17-Setup.exe"
+        return @{ Ok = $true; Home = "(not installed - dry run)"; Version = $null }
+    }
+
+    Write-Info "Installing Java 17 silently (no clicks required)..."
+    Start-Process -FilePath $JavaInstaller -ArgumentList "/s" -Wait
+
+    $state = Test-JavaVersion
+    if ($state.Ok) { return $state }
+
+    Write-Warn "Silent install did not complete automatically."
+    Write-Info "Opening the installer for one-time manual completion..."
+    Start-Process -FilePath $JavaInstaller -Wait
+
+    $state = Test-JavaVersion
+    if (-not $state.Ok) {
+        Write-Fail "Java was installed but could not be detected."
+        Write-Info "Check that Java17-Setup.exe installed Java 17, or open a NEW terminal and run: java -version"
+        throw "Java 17+ could not be detected after installation."
+    }
+    return $state
+}
+
+function Test-Installation {
+    param(
+        [string]$InstallRoot,
+        [PSCustomObject]$Cfg,
+        [string]$SdkManagerPath
+    )
+
+    $failed = $false
+
+    $checks = @(
+        @{ Name = "Platform Tools / ADB"; Path = Join-Path $InstallRoot "platform-tools\adb.exe" }
+        @{ Name = "Android $($Cfg.androidPlatform)"; Path = Join-Path $InstallRoot "platforms\android-$($Cfg.androidPlatform)" }
+        @{ Name = "Build Tools $($Cfg.buildTools)"; Path = Join-Path $InstallRoot "build-tools\$($Cfg.buildTools)" }
+        @{ Name = "NDK $($Cfg.ndk)"; Path = Join-Path $InstallRoot "ndk\$($Cfg.ndk)" }
+        @{ Name = "CMake $($Cfg.cmake)"; Path = Join-Path $InstallRoot "cmake\$($Cfg.cmake)" }
+        @{ Name = "SDK Manager"; Path = $SdkManagerPath }
+    )
+
+    foreach ($c in $checks) {
+        if (Test-Path $c.Path) { Write-Ok $c.Name } else { Write-Fail $c.Name; $failed = $true }
+    }
+
+    $javaState = Test-JavaVersion
+    if ($javaState.Ok) { Write-Ok "Java 17+" } else { Write-Fail "Java 17+"; $failed = $true }
+
+    return @{ Failed = $failed; JavaState = $javaState }
+}
+
+function Invoke-Check {
+    param([PSCustomObject]$Cfg)
+
+    Write-Banner "ANDROID SETUP - CHECK MODE"
+    Write-Step "Verifying current environment against $($Cfg.installRoot)..."
+
+    $sdkManager = Get-SdkManagerPath -InstallRoot $Cfg.installRoot
+    $verify = Test-Installation -InstallRoot $Cfg.installRoot -Cfg $Cfg -SdkManagerPath $sdkManager
+
+    Write-Host ""
+    if ($verify.Failed) {
+        Write-Warn "Some components are missing or not configured."
+        return 1
+    }
+
+    Write-Ok "Environment looks complete."
+    return 0
+}
+
+function Invoke-Install {
+    param([PSCustomObject]$Cfg)
+
+    $InstallRoot = $Cfg.installRoot
+    $SdkManager = Get-SdkManagerPath -InstallRoot $InstallRoot
+
+    Write-Banner
+    if ($DryRun) {
+        Write-Host "  DRY RUN - no files will be deleted, no packages installed," -ForegroundColor Magenta
+        Write-Host "  no environment variables changed." -ForegroundColor Magenta
+        Write-Host ""
+    }
+    Write-Host "This installer will prepare a CLEAN Android development"
+    Write-Host "environment for building Android applications."
+    Write-Host ""
+    Write-Host "CLEANUP:"
+    Write-Host "  - Existing $InstallRoot will be removed."
+    Write-Host "  - Old/wrong ANDROID_HOME, ANDROID_SDK_ROOT (User + Machine)"
+    Write-Host "    will be detected and reset."
+    Write-Host "  - Android SDK/NDK/CMake PATH entries will be cleaned."
+    Write-Host ""
+    Write-Host "INSTALLS:"
+    Write-Host "  - Android Command Line Tools"
+    Write-Host "  - Platform Tools / ADB"
+    Write-Host "  - Android $($Cfg.androidPlatform) platform"
+    Write-Host "  - Build Tools $($Cfg.buildTools)"
+    Write-Host "  - NDK $($Cfg.ndk)"
+    Write-Host "  - CMake $($Cfg.cmake)"
+    Write-Host ""
+    Write-Host "JAVA:"
+    Write-Host "  - Existing Java 17+ will NOT be uninstalled or touched."
+    Write-Host "  - If missing, bundled Java17-Setup.exe is installed silently."
+    Write-Host ""
+    Write-Host "NOT TOUCHED:"
+    Write-Host "  - Project files outside $InstallRoot, Node.js/npm, Git,"
+    Write-Host "    unrelated PATH entries, emulators/system images."
+    Write-Host ""
+
+    if (-not $Yes) {
+        $resp = Read-Host "Start CLEAN + FRESH Android setup? [Y/N]"
+        if ($resp -notmatch '^[Yy]') {
+            Write-Host ""
+            Write-Host "Setup cancelled. No installation was started."
+            Write-Host ""
+            return 0
+        }
+    }
+
+    Write-Step "[1/7] Checking Java..."
+    $javaState = Test-JavaVersion
+    if ($javaState.Ok) {
+        Write-Ok "Java 17+ detected."
+        Write-Info "Existing Java will be preserved."
+        Write-Info "Java Home: $($javaState.Home)"
+    } else {
+        Write-Warn "Java 17+ was not detected."
+        $javaState = Install-JavaSilently
+        Write-Ok "Java 17+ detected successfully."
+        Write-Info "Java Home: $($javaState.Home)"
+    }
+
+    Write-Step "[2/7] Detecting and cleaning old/wrong Android environment..."
+    if (-not (Test-Path $CleanEnvScript)) {
+        throw "tools\Clean-AndroidEnv.ps1 was not found: $CleanEnvScript"
+    }
+    & $CleanEnvScript -NewRoot $InstallRoot -DryRun:$DryRun -NoColor:$NoColor
+
+    Write-Step "[3/7] Removing old $InstallRoot..."
+    if ($DryRun) {
+        if (Test-Path $InstallRoot) {
+            Write-DryRun "Would remove $InstallRoot"
+        } else {
+            Write-Info "$InstallRoot does not exist, nothing to remove."
+        }
+        Write-DryRun "Would create fresh $InstallRoot"
+    } else {
+        if (Test-Path $InstallRoot) {
+            Write-Info "Removing $InstallRoot ..."
+            Remove-Item -LiteralPath $InstallRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path $InstallRoot) {
+            Write-Fail "Could not remove $InstallRoot."
+            Write-Info "Close Android Studio, Gradle, ADB or other processes that may be using it and run this installer again."
+            throw "Could not remove $InstallRoot."
+        }
+        New-Item -ItemType Directory -Path $InstallRoot | Out-Null
+        if (-not (Test-Path $InstallRoot)) {
+            throw "Could not create $InstallRoot."
+        }
+        Write-Ok "Fresh $InstallRoot created."
+    }
+
+    if (-not (Test-Path $CmdlineZip)) {
+        Write-Fail "Android Command Line Tools package not found."
+        Write-Info "Expected: $CmdlineZip"
+        Write-Info "Please put commandlinetools-win.zip inside: $(Join-Path $PSScriptRoot 'packages')"
+        throw "Android Command Line Tools package not found."
+    }
+
+    Write-Step "[4/7] Extracting Android Command Line Tools..."
+    if ($DryRun) {
+        Write-DryRun "Would extract $CmdlineZip to $InstallRoot\cmdline-tools\latest"
+    } else {
+        $tempExtract = Join-Path $env:TEMP "android-cmdline-tools"
+        if (Test-Path $tempExtract) { Remove-Item -LiteralPath $tempExtract -Recurse -Force }
+        New-Item -ItemType Directory -Path $tempExtract | Out-Null
+
+        Expand-Archive -LiteralPath $CmdlineZip -DestinationPath $tempExtract -Force
+
+        New-Item -ItemType Directory -Path (Join-Path $InstallRoot "cmdline-tools") -Force | Out-Null
+
+        $extracted = Join-Path $tempExtract "cmdline-tools"
+        if (Test-Path $extracted) {
+            Move-Item -LiteralPath $extracted -Destination (Join-Path $InstallRoot "cmdline-tools\latest")
+        } else {
+            Write-Fail "Expected cmdline-tools folder was not found in the zip."
+            Write-Info "The ZIP should contain: cmdline-tools\bin, lib, source.properties"
+            throw "Expected cmdline-tools folder was not found in the zip."
+        }
+
+        if (-not (Test-Path $SdkManager)) {
+            throw "sdkmanager.bat was not found: $SdkManager"
+        }
+
+        Write-Ok "Android Command Line Tools installed."
+    }
+
+    Write-Step "[5/7] Installing required Android packages..."
+    Write-Info "Platform Tools"
+    Write-Info "Android $($Cfg.androidPlatform)"
+    Write-Info "Build Tools $($Cfg.buildTools)"
+    Write-Info "NDK $($Cfg.ndk)"
+    Write-Info "CMake $($Cfg.cmake)"
+
+    if ($DryRun) {
+        Write-DryRun "Would run sdkmanager to install the packages above and accept licenses"
+    } else {
+        $sdkArgs = @(
+            "--sdk_root=$InstallRoot",
+            "platform-tools",
+            "platforms;android-$($Cfg.androidPlatform)",
+            "build-tools;$($Cfg.buildTools)",
+            "ndk;$($Cfg.ndk)",
+            "cmake;$($Cfg.cmake)"
+        )
+        & $SdkManager @sdkArgs
+        if ($LASTEXITCODE -ne 0) {
+            throw "Android SDK package installation failed (exit code $LASTEXITCODE)."
+        }
+
+        Write-Info "Accepting Android SDK licenses..."
+        (1..30 | ForEach-Object { "y" }) | & $SdkManager --sdk_root=$InstallRoot --licenses | Out-Null
+
+        Write-Ok "Android packages installed successfully."
+    }
+
+    Write-Step "[6/7] Configuring Android environment variables..."
+    if ($DryRun) {
+        Write-DryRun "Would set ANDROID_HOME = $InstallRoot (User)"
+        Write-DryRun "Would set ANDROID_SDK_ROOT = $InstallRoot (User)"
+        Write-DryRun "Would add to User PATH: $InstallRoot\platform-tools, $InstallRoot\cmdline-tools\latest\bin"
+    } else {
+        [Environment]::SetEnvironmentVariable('ANDROID_HOME', $InstallRoot, 'User')
+        [Environment]::SetEnvironmentVariable('ANDROID_SDK_ROOT', $InstallRoot, 'User')
+
+        $pathEntries = @(
+            (Join-Path $InstallRoot "platform-tools"),
+            (Join-Path $InstallRoot "cmdline-tools\latest\bin")
+        )
+        $currentPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        $parts = @($currentPath -split ';' | Where-Object { $_.Trim() })
+        foreach ($entry in $pathEntries) {
+            if ($parts -notcontains $entry) { $parts += $entry }
+        }
+        [Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User')
+
+        $env:ANDROID_HOME = $InstallRoot
+        $env:ANDROID_SDK_ROOT = $InstallRoot
+        $env:Path = "$InstallRoot\platform-tools;$InstallRoot\cmdline-tools\latest\bin;$env:Path"
+
+        Write-Ok "ANDROID_HOME = $InstallRoot"
+        Write-Ok "ANDROID_SDK_ROOT = $InstallRoot"
+        Write-Ok "Android PATH entries configured."
+    }
+
+    Write-Step "[7/7] Verifying installation..."
+    $verify = Test-Installation -InstallRoot $InstallRoot -Cfg $Cfg -SdkManagerPath $SdkManager
+
+    if ($verify.Failed -and -not $DryRun) {
+        throw "SETUP FAILED - one or more required components are missing. Review the errors above."
+    }
+
+    if ($DryRun) {
+        Write-Host ""
+        Write-Info "Dry run complete - no changes were made to your system."
+        return 0
+    }
+
+    Write-Summary -Title "SETUP COMPLETE" -Elapsed $sw.Elapsed -Fields ([ordered]@{
+        "SDK Root"    = $InstallRoot
+        "Android"     = $Cfg.androidPlatform
+        "Build Tools" = $Cfg.buildTools
+        "NDK"         = $Cfg.ndk
+        "CMake"       = $Cfg.cmake
+        "Java Home"   = $verify.JavaState.Home
+    })
+
+    Write-Info "Open a NEW PowerShell/CMD window before building."
+    return 0
+}
+
+$exitCode = 0
+try {
+    if (-not (Test-Path $Config)) {
+        throw "Config file not found: $Config"
+    }
+    $cfg = Get-Content -LiteralPath $Config -Raw | ConvertFrom-Json
+
+    if ($Check) {
+        $exitCode = Invoke-Check -Cfg $cfg
+    } else {
+        $exitCode = Invoke-Install -Cfg $cfg
+    }
+}
+catch {
+    Write-Host ""
+    Write-Fail $_.Exception.Message
+    $exitCode = 1
+}
+finally {
+    try { Stop-Transcript | Out-Null } catch {}
+}
+
+exit $exitCode

@@ -1,15 +1,20 @@
 # Detects and removes old/wrong Android SDK environment configuration
 # (ANDROID_HOME / ANDROID_SDK_ROOT in User + Machine scope, Android-related
 # PATH entries, and leftover SDK folders outside the target install root)
-# before INSTALL.bat sets up a fresh environment.
+# before Install.ps1 sets up a fresh environment.
 
 param(
     [Parameter(Mandatory = $true)]
-    [string]$NewRoot
+    [string]$NewRoot,
+    [switch]$DryRun,
+    [switch]$NoColor
 )
 
 $ErrorActionPreference = 'Stop'
 $NewRoot = $NewRoot.TrimEnd('\')
+
+. (Join-Path $PSScriptRoot "..\lib\Console.ps1")
+Set-ConsoleColorMode -NoColor:$NoColor
 
 function Get-Var($name, $scope) {
     [Environment]::GetEnvironmentVariable($name, $scope)
@@ -37,8 +42,13 @@ function Add-OldDir($path) {
 foreach ($scope in 'User', 'Machine') {
     Add-OldDir (Get-Var 'ANDROID_HOME' $scope)
     Add-OldDir (Get-Var 'ANDROID_SDK_ROOT' $scope)
-    [Environment]::SetEnvironmentVariable('ANDROID_HOME', $null, $scope)
-    [Environment]::SetEnvironmentVariable('ANDROID_SDK_ROOT', $null, $scope)
+    if ($DryRun) {
+        if (Get-Var 'ANDROID_HOME' $scope) { Write-DryRun "Would clear ANDROID_HOME ($scope scope)" }
+        if (Get-Var 'ANDROID_SDK_ROOT' $scope) { Write-DryRun "Would clear ANDROID_SDK_ROOT ($scope scope)" }
+    } else {
+        [Environment]::SetEnvironmentVariable('ANDROID_HOME', $null, $scope)
+        [Environment]::SetEnvironmentVariable('ANDROID_SDK_ROOT', $null, $scope)
+    }
 }
 
 # Android Studio's own default SDK location, in case it was used before.
@@ -52,17 +62,29 @@ $pattern = '(?i)\\android(\\|$)|\\android sdk(\\|$)|\\cmdline-tools(\\|$)|' +
 
 $p = Get-Var 'Path' 'User'
 if ($p) {
+    $removed = @($p -split ';' | Where-Object { $_ -and ($_ -match $pattern) })
     $kept = @($p -split ';' | Where-Object { $_ -and ($_ -notmatch $pattern) })
-    [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User')
+
+    if ($DryRun) {
+        foreach ($entry in $removed) { Write-DryRun "Would remove PATH entry: $entry" }
+    } elseif ($removed.Count -gt 0) {
+        [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User')
+    }
 }
 
 foreach ($dir in $oldDirs) {
-    Write-Host "       Removing old Android setup: $dir"
-    Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    if ($DryRun) {
+        Write-DryRun "Would remove old Android setup: $dir"
+    } else {
+        Write-Info "Removing old Android setup: $dir"
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 if ($oldDirs.Count -eq 0) {
-    Write-Host "       No old/wrong Android environment found."
+    Write-Info "No old/wrong Android environment found."
 }
 
-Write-Host "       Old Android environment variables and PATH entries cleared."
+if (-not $DryRun) {
+    Write-Ok "Old Android environment variables and PATH entries cleared."
+}
