@@ -87,6 +87,30 @@ function Write-DryRun {
     }
 }
 
+function Write-DownloadProgress {
+    param(
+        [int]$Percent,
+        [double]$DoneMB,
+        [double]$TotalMB,
+        [double]$SpeedMBs,
+        [string]$Label = "Downloading"
+    )
+
+    $barWidth = 30
+    $filled = [Math]::Max(0, [Math]::Min($barWidth, [int][Math]::Floor($barWidth * $Percent / 100)))
+    $bar = ("#" * $filled) + ("-" * ($barWidth - $filled))
+    $stats = "{0,3}% ({1:N1}/{2:N1} MB, {3:N1} MB/s)   " -f $Percent, $DoneMB, $TotalMB, $SpeedMBs
+
+    if ($script:NoColor) {
+        Write-Host -NoNewline ("`r  {0}: [{1}] {2}" -f $Label, $bar, $stats)
+    } else {
+        Write-Host -NoNewline "`r  "
+        Write-Host -NoNewline "$Label " -ForegroundColor DarkGray
+        Write-Host -NoNewline "[$bar] " -ForegroundColor Cyan
+        Write-Host -NoNewline $stats -ForegroundColor Green
+    }
+}
+
 function Write-Summary {
     param(
         [hashtable]$Fields,

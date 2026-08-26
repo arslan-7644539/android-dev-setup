@@ -158,6 +158,51 @@ function Set-JavaHomeEnv {
     }
 }
 
+# Invoke-WebRequest's own progress rendering is a plain OS progress dialog
+# (the blue "Writing web request..." banner) that doesn't match the rest
+# of this tool's output. Streaming the response ourselves gives us a
+# colored, in-place progress bar instead.
+function Invoke-DownloadWithProgress {
+    param(
+        [string]$Url,
+        [string]$OutFile,
+        [string]$Label = "Downloading"
+    )
+
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+    $request = [System.Net.HttpWebRequest]::Create($Url)
+    $request.UserAgent = "android-dev-setup"
+    $response = $request.GetResponse()
+    $totalBytes = $response.ContentLength
+
+    $responseStream = $response.GetResponseStream()
+    $fileStream = [System.IO.File]::Create($OutFile)
+    $buffer = New-Object byte[] 65536
+    $totalRead = 0L
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastDraw = [System.Diagnostics.Stopwatch]::StartNew()
+
+    try {
+        while (($read = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $fileStream.Write($buffer, 0, $read)
+            $totalRead += $read
+
+            if ($lastDraw.ElapsedMilliseconds -ge 150 -or $totalRead -eq $totalBytes) {
+                $percent = if ($totalBytes -gt 0) { [int](($totalRead / $totalBytes) * 100) } else { 0 }
+                $speed = if ($sw.Elapsed.TotalSeconds -gt 0) { ($totalRead / 1MB) / $sw.Elapsed.TotalSeconds } else { 0 }
+                Write-DownloadProgress -Percent $percent -DoneMB ($totalRead / 1MB) -TotalMB ($totalBytes / 1MB) -SpeedMBs $speed -Label $Label
+                $lastDraw.Restart()
+            }
+        }
+    } finally {
+        $fileStream.Close()
+        $responseStream.Close()
+        $response.Close()
+    }
+    Write-Host ""
+}
+
 # Google doesn't publish a permanently-stable "latest" alias for this URL -
 # the build number in cmdlineToolsUrl (config.json) will eventually go
 # stale and need updating. Manually placing the zip in packages\ always
@@ -182,7 +227,7 @@ function Get-CmdlineToolsZip {
     Write-Info "commandlinetools-win.zip not found locally - downloading from Google..."
     Write-Info $Cfg.cmdlineToolsUrl
     try {
-        Invoke-WebRequest -Uri $Cfg.cmdlineToolsUrl -OutFile $CmdlineZip -UseBasicParsing
+        Invoke-DownloadWithProgress -Url $Cfg.cmdlineToolsUrl -OutFile $CmdlineZip -Label "cmdline-tools"
     } catch {
         if (Test-Path $CmdlineZip) { Remove-Item -LiteralPath $CmdlineZip -Force -ErrorAction SilentlyContinue }
         throw "Failed to download Android Command Line Tools: $($_.Exception.Message)"
