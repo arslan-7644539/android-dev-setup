@@ -421,14 +421,17 @@ function Invoke-Install {
     }
 
     Write-Step "[5/7] Installing required Android packages..."
-    Write-Info "Platform Tools"
-    Write-Info "Android $($Cfg.androidPlatform)"
-    Write-Info "Build Tools $($Cfg.buildTools)"
-    Write-Info "NDK $($Cfg.ndk)"
-    Write-Info "CMake $($Cfg.cmake)"
+
+    $packages = [ordered]@{
+        "Platform Tools"                  = "platform-tools"
+        "Android $($Cfg.androidPlatform)" = "platforms;android-$($Cfg.androidPlatform)"
+        "Build Tools $($Cfg.buildTools)"  = "build-tools;$($Cfg.buildTools)"
+        "NDK $($Cfg.ndk)"                 = "ndk;$($Cfg.ndk)"
+        "CMake $($Cfg.cmake)"             = "cmake;$($Cfg.cmake)"
+    }
 
     if ($DryRun) {
-        Write-DryRun "Would run sdkmanager to install the packages above and accept licenses"
+        foreach ($label in $packages.Keys) { Write-DryRun "Would install $label ($($packages[$label]))" }
     } else {
         # Licenses must be accepted BEFORE installing - sdkmanager silently
         # skips any package whose license isn't accepted yet (and still
@@ -448,20 +451,24 @@ function Invoke-Install {
             Remove-Item -LiteralPath $yesFile -Force -ErrorAction SilentlyContinue
         }
 
-        $sdkArgs = @(
-            "--sdk_root=$InstallRoot",
-            "platform-tools",
-            "platforms;android-$($Cfg.androidPlatform)",
-            "build-tools;$($Cfg.buildTools)",
-            "ndk;$($Cfg.ndk)",
-            "cmake;$($Cfg.cmake)"
-        )
-        & $SdkManager @sdkArgs
-        if ($LASTEXITCODE -ne 0) {
-            throw "Android SDK package installation failed (exit code $LASTEXITCODE)."
-        }
+        # sdkmanager's own console output (deprecation warnings, its own
+        # progress bar) is noisy and doesn't match this tool's style, so
+        # each package is installed one at a time with our own status
+        # line - full sdkmanager output is only shown if a package fails,
+        # for debugging. Capturing via cmd's own "2>&1" (like the license
+        # step above) avoids PowerShell wrapping sdkmanager's stderr as an
+        # ErrorRecord and auto-printing it regardless of our own handling.
+        foreach ($label in $packages.Keys) {
+            $pkgId = $packages[$label]
+            Write-Info "Installing $label..."
 
-        Write-Ok "Android packages installed successfully."
+            $output = cmd /c "`"$SdkManager`" --sdk_root=`"$InstallRoot`" $pkgId 2>&1"
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host ($output -join "`n")
+                throw "Failed to install $label (sdkmanager exit code $LASTEXITCODE)."
+            }
+            Write-Ok "$label installed."
+        }
     }
 
     Write-Step "[6/7] Configuring Android environment variables..."
