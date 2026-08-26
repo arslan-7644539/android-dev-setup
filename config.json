@@ -3,5 +3,7 @@
   "androidPlatform": "36",
   "buildTools": "36.0.0",
   "ndk": "27.1.12297006",
-  "cmake": "3.22.1"
+  "cmake": "3.22.1",
+  "cmdlineToolsUrl": "https://dl.google.com/android/repository/commandlinetools-win-15859902_latest.zip",
+  "cmdlineToolsSha256": "90AE805D20434428BFFCB699C290860F19BB5F66A67E6B330067E3DE801FB04A"
 }

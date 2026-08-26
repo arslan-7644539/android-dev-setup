@@ -158,6 +158,48 @@ function Set-JavaHomeEnv {
     }
 }
 
+# Google doesn't publish a permanently-stable "latest" alias for this URL -
+# the build number in cmdlineToolsUrl (config.json) will eventually go
+# stale and need updating. Manually placing the zip in packages\ always
+# still works and takes priority over downloading.
+function Get-CmdlineToolsZip {
+    param([PSCustomObject]$Cfg)
+
+    if (Test-Path $CmdlineZip) { return }
+
+    if (-not $Cfg.cmdlineToolsUrl) {
+        Write-Fail "Android Command Line Tools package not found."
+        Write-Info "Expected: $CmdlineZip"
+        Write-Info "Please put commandlinetools-win.zip inside: $(Join-Path $PSScriptRoot 'packages')"
+        throw "Android Command Line Tools package not found."
+    }
+
+    if ($DryRun) {
+        Write-DryRun "Would download commandlinetools-win.zip from $($Cfg.cmdlineToolsUrl)"
+        return
+    }
+
+    Write-Info "commandlinetools-win.zip not found locally - downloading from Google..."
+    Write-Info $Cfg.cmdlineToolsUrl
+    try {
+        Invoke-WebRequest -Uri $Cfg.cmdlineToolsUrl -OutFile $CmdlineZip -UseBasicParsing
+    } catch {
+        if (Test-Path $CmdlineZip) { Remove-Item -LiteralPath $CmdlineZip -Force -ErrorAction SilentlyContinue }
+        throw "Failed to download Android Command Line Tools: $($_.Exception.Message)"
+    }
+
+    if ($Cfg.cmdlineToolsSha256) {
+        $actualHash = (Get-FileHash -Path $CmdlineZip -Algorithm SHA256).Hash
+        if ($actualHash -ne $Cfg.cmdlineToolsSha256) {
+            Remove-Item -LiteralPath $CmdlineZip -Force -ErrorAction SilentlyContinue
+            throw "Downloaded commandlinetools-win.zip failed checksum verification (got $actualHash, expected $($Cfg.cmdlineToolsSha256))."
+        }
+        Write-Ok "Checksum verified."
+    }
+
+    Write-Ok "Downloaded commandlinetools-win.zip."
+}
+
 function Test-Installation {
     param(
         [string]$InstallRoot,
@@ -301,12 +343,7 @@ function Invoke-Install {
         Write-Ok "Fresh $InstallRoot created."
     }
 
-    if (-not (Test-Path $CmdlineZip)) {
-        Write-Fail "Android Command Line Tools package not found."
-        Write-Info "Expected: $CmdlineZip"
-        Write-Info "Please put commandlinetools-win.zip inside: $(Join-Path $PSScriptRoot 'packages')"
-        throw "Android Command Line Tools package not found."
-    }
+    Get-CmdlineToolsZip -Cfg $Cfg
 
     Write-Step "[4/7] Extracting Android Command Line Tools..."
     if ($DryRun) {

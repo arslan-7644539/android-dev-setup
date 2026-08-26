@@ -8,9 +8,8 @@ Unattended Android SDK installer for Windows — clean, fresh `C:\Android` setup
 
 ## Install
 
-1. Put the required vendor packages in the `packages` folder:
-   - `Java17-Setup.exe`
-   - `commandlinetools-win.zip`
+1. Put `Java17-Setup.exe` in the `packages` folder.
+   `commandlinetools-win.zip` is optional — if it's missing, the installer downloads it automatically from Google (see below). Put it in `packages` yourself if you'd rather not rely on network access at install time.
 2. Keep `tools\Clean-AndroidEnv.ps1` and `lib\Console.ps1` next to `Install.ps1` and `INSTALL.bat` (folder layout must stay intact).
 3. Right-click `INSTALL.bat`.
 4. Select **Run as administrator**.
@@ -43,6 +42,10 @@ Component versions are no longer hardcoded in the script. Edit `config.json` in 
 | `buildTools` | Build Tools version | `36.0.0` |
 | `ndk` | NDK version | `27.1.12297006` |
 | `cmake` | CMake version | `3.22.1` |
+| `cmdlineToolsUrl` | Download URL used when `packages\commandlinetools-win.zip` is missing | Google's official URL |
+| `cmdlineToolsSha256` | Expected SHA-256 of that download; the install aborts if it doesn't match | current build's hash |
+
+Google doesn't publish a permanently-stable "latest" link for the command line tools - the build number in `cmdlineToolsUrl` will eventually go stale. If the download fails or the checksum stops matching, grab the current one from https://developer.android.com/studio#command-line-tools-only and update both `cmdlineToolsUrl` and `cmdlineToolsSha256`, or just place `commandlinetools-win.zip` in `packages` yourself - a local file always takes priority over downloading.
 
 ## Logs
 
@@ -81,4 +84,4 @@ No emulator or Android system image is installed.
 
 ## Important
 
-The ZIP contains the installer and package placeholders, not the actual Java/Android binaries. Add the official packages before running it.
+The ZIP contains the installer and a package placeholder, not the actual binaries. Add the official `Java17-Setup.exe` before running it — `commandlinetools-win.zip` is downloaded automatically if missing.

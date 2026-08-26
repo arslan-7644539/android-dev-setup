@@ -4,3 +4,6 @@ packages/*.zip
 
 # Install logs
 logs/
+
+# Local Claude Code tool state
+.claude/

@@ -1,1 +1,6 @@
-Place the official Windows Android Command Line Tools ZIP here and name it commandlinetools-win.zip.
+Optional: place the official Windows Android Command Line Tools ZIP here
+and name it commandlinetools-win.zip.
+
+If it's missing, Install.ps1 downloads it automatically from the URL in
+config.json (cmdlineToolsUrl) and verifies it against cmdlineToolsSha256.
+A file placed here always takes priority over downloading.
