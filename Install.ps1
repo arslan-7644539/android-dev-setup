@@ -69,7 +69,16 @@ function Test-JavaVersion {
     $javaExe = Join-Path $javaHome "bin\java.exe"
     if (-not (Test-Path $javaExe)) { return $result }
 
-    $out = & $javaExe -version 2>&1 | Out-String
+    # java -version writes to stderr by design; with $ErrorActionPreference
+    # = 'Stop' at script scope, capturing that via 2>&1 would otherwise be
+    # promoted to a terminating exception instead of just being text.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $javaExe -version 2>&1 | Out-String
+    } finally {
+        $ErrorActionPreference = $prevEap
+    }
     if ($out -match 'version\s+"([\d._]+)"') {
         $version = $Matches[1]
         $result.Version = $version
@@ -80,6 +89,20 @@ function Test-JavaVersion {
     }
 
     return $result
+}
+
+# Vendor Java installers write JAVA_HOME to the registry (Machine/User scope)
+# but the already-running PowerShell process keeps its original env block -
+# it won't see that until we pull it in explicitly. Mirrors the original
+# batch script's :REFRESH_JAVA_ENV step. User scope wins if both are set.
+function Sync-JavaEnvFromRegistry {
+    foreach ($scope in 'Machine', 'User') {
+        $javaHome = [Environment]::GetEnvironmentVariable('JAVA_HOME', $scope)
+        if ($javaHome -and (Test-Path (Join-Path $javaHome "bin\java.exe"))) {
+            $env:JAVA_HOME = $javaHome
+            $env:Path = "$javaHome\bin;$env:Path"
+        }
+    }
 }
 
 function Install-JavaSilently {
@@ -98,6 +121,7 @@ function Install-JavaSilently {
 
     Write-Info "Installing Java 17 silently (no clicks required)..."
     Start-Process -FilePath $JavaInstaller -ArgumentList "/s" -Wait
+    Sync-JavaEnvFromRegistry
 
     $state = Test-JavaVersion
     if ($state.Ok) { return $state }
@@ -105,6 +129,7 @@ function Install-JavaSilently {
     Write-Warn "Silent install did not complete automatically."
     Write-Info "Opening the installer for one-time manual completion..."
     Start-Process -FilePath $JavaInstaller -Wait
+    Sync-JavaEnvFromRegistry
 
     $state = Test-JavaVersion
     if (-not $state.Ok) {
