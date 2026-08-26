@@ -1,0 +1,1 @@
+Place the official Windows Android Command Line Tools ZIP here and name it commandlinetools-win.zip.

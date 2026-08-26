@@ -1,0 +1,6 @@
+# Vendor binaries — user supplies these locally, not tracked in git
+packages/*.exe
+packages/*.zip
+
+# Install logs
+logs/
