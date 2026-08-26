@@ -307,6 +307,8 @@ function Invoke-Install {
     Write-Host "This installer will prepare a CLEAN Android development"
     Write-Host "environment for building Android applications."
     Write-Host ""
+    Write-Host "REQUIRES: Java 17 or newer (installed automatically if missing)" -ForegroundColor Yellow
+    Write-Host ""
     Write-Host "CLEANUP:"
     Write-Host "  - Existing $InstallRoot will be removed."
     Write-Host "  - Old/wrong ANDROID_HOME, ANDROID_SDK_ROOT (User + Machine)"

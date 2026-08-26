@@ -6,6 +6,13 @@ Unattended Android SDK installer for Windows — clean, fresh `C:\Android` setup
 
 `android-dev-setup.zip`
 
+## Requirements
+
+- Windows 10/11, 64-bit
+- Administrator rights
+- **Java 17 or newer** — required to run `sdkmanager` and build Android projects. If it's missing, the installer installs it for you from `packages\Java17-Setup.exe` (see below); an older Java (8, 11, etc.) is left alone and treated as "missing" until 17+ is present.
+- Internet connection (for SDK/NDK package downloads, and for `commandlinetools-win.zip` if it isn't bundled locally)
+
 ## Install
 
 1. Put `Java17-Setup.exe` in the `packages` folder.
