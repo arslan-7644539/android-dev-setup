@@ -75,6 +75,9 @@ It does **NOT** remove Node.js/npm, Git, project files outside the install root,
 - Java 17 or newer detected: keep the existing Java installation.
 - Java missing: install `packages\Java17-Setup.exe` silently (`/s`, no clicks needed). If silent install can't be confirmed, the installer is reopened once for manual completion.
 - Bundled Java installer missing when Java is required: stop with a clear error.
+- Sets `JAVA_HOME` (User scope) to the confirmed JDK if it's missing or points at a JDK that no longer exists, and sets `org.gradle.java.home` in the per-user `~/.gradle/gradle.properties` so every Gradle/Android project on the machine builds with the confirmed JDK, not whatever `JAVA_HOME` a given shell happens to have.
+
+**A terminal (or VS Code) that was already open before running this installer will not pick up a `JAVA_HOME` fix** — Windows only loads environment variables into a process when it starts. If a build still reports `JAVA_HOME is set to an invalid directory` right after running this installer, close that terminal/VS Code completely and open a new one.
 
 ## Android components
 
